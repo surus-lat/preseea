@@ -6,6 +6,16 @@ import os
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+def is_corrupted_mp3(filepath):
+    if not filepath.lower().endswith('.mp3'):
+        return False
+    try:
+        from mutagen.mp3 import MP3
+        MP3(filepath)
+        return False
+    except Exception:
+        return True
+
 def download_file(url, session, base_url, save_dir):
     local_filename = os.path.basename(urlparse(url).path)
     full_url = urljoin(base_url, url)
@@ -66,10 +76,17 @@ def main():
                     save_dir = os.path.join('preseea', country_name)
                     local_filename = os.path.basename(urlparse(href).path)
                     local_path = os.path.join(save_dir, local_filename)
-                    if os.path.exists(local_path):
+                    file_exists = os.path.exists(local_path)
+                    corrupted = False
+                    if file_exists and local_filename.lower().endswith('.mp3'):
+                        corrupted = is_corrupted_mp3(local_path)
+                    if file_exists and not corrupted:
                         print(f"Already exists, skipping: {local_path}")
                         continue
-                    print(f"Queueing: {href} -> {save_dir}")
+                    if corrupted:
+                        print(f"Corrupted file detected, will redownload: {local_path}")
+                    else:
+                        print(f"Queueing: {href} -> {save_dir}")
                     download_args.append((href, session, base_url, save_dir))
 
         # Concurrent download
