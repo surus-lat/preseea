@@ -50,6 +50,7 @@ def main():
     concurrent = args.concurrent
 
     audio_text_pairs = []  # List of tuples: (mp3_path, txt_path)
+    all_mp3_txt_links = [] # List of tuples: (mp3_href, txt_href, save_dir)
 
     while True:
         post_data = (
@@ -73,38 +74,33 @@ def main():
             if len(tds) < 2:
                 continue
             country_name = tds[-2].get_text(strip=True)
-            # Find all <a> with .txt or .mp3 in href in this row
-            mp3_path, txt_path = None, None
-            for link in row.find_all('a', href=True):
-                href = link['href']
-                if re.search(r'\.mp3$', href, re.IGNORECASE):
-                    save_dir = os.path.join('preseea', country_name)
-                    local_filename = os.path.basename(urlparse(href).path)
-                    mp3_path = os.path.join(save_dir, local_filename)
-                    # ...file_exists/corrupted logic as before...
-                    file_exists = os.path.exists(mp3_path)
-                    corrupted = False
-                    if file_exists:
-                        corrupted = is_corrupted_mp3(mp3_path)
-                    if file_exists and not corrupted:
-                        print(f"Already exists, skipping: {mp3_path}")
-                        continue
-                    if corrupted:
-                        print(f"Corrupted file detected, will redownload: {mp3_path}")
-                    else:
-                        print(f"Queueing: {href} -> {save_dir}")
-                    download_args.append((href, session, base_url, save_dir))
-                elif re.search(r'\.txt$', href, re.IGNORECASE):
-                    save_dir = os.path.join('preseea', country_name)
-                    local_filename = os.path.basename(urlparse(href).path)
-                    txt_path = os.path.join(save_dir, local_filename)
-                    # No need to check for corruption for txt
-                    if not os.path.exists(txt_path):
-                        print(f"Queueing: {href} -> {save_dir}")
-                        download_args.append((href, session, base_url, save_dir))
-            # If both mp3 and txt found in this row, record the pair
-            if mp3_path and txt_path:
-                audio_text_pairs.append((mp3_path, txt_path))
+            save_dir = os.path.join('preseea', country_name)
+            # Construct URLs using utterance_name
+            mp3_href = f"mp3/{utterance_name}.mp3"
+            txt_href = f"txt/{utterance_name}.txt"
+            mp3_filename = f"{utterance_name}.mp3"
+            txt_filename = f"{utterance_name}.txt"
+            mp3_path = os.path.join(save_dir, mp3_filename)
+            txt_path = os.path.join(save_dir, txt_filename)
+            audio_text_pairs.append((mp3_path, txt_path))
+            all_mp3_txt_links.append((mp3_href, txt_href, save_dir))
+            # Download logic for mp3
+            file_exists = os.path.exists(mp3_path)
+            corrupted = False
+            if file_exists:
+                corrupted = is_corrupted_mp3(mp3_path)
+            if file_exists and not corrupted:
+                print(f"Already exists, skipping: {mp3_path}")
+            else:
+                if corrupted:
+                    print(f"Corrupted file detected, will redownload: {mp3_path}")
+                else:
+                    print(f"Queueing: {mp3_href} -> {save_dir}")
+                download_args.append((mp3_href, session, base_url, save_dir))
+            # Download logic for txt
+            if not os.path.exists(txt_path):
+                print(f"Queueing: {txt_href} -> {save_dir}")
+                download_args.append((txt_href, session, base_url, save_dir))
 
         # Concurrent download
         with ThreadPoolExecutor(max_workers=concurrent) as executor:
@@ -130,6 +126,27 @@ def main():
 
     print(f"Total files downloaded: {total_downloaded}")
 
+    # --- Retry missing pairs before metadata creation ---
+    retry_download_args = []
+    for (mp3_path, txt_path), (mp3_href, txt_href, save_dir) in zip(audio_text_pairs, all_mp3_txt_links):
+        if not os.path.exists(mp3_path):
+            retry_download_args.append((mp3_href, session, base_url, save_dir))
+        if not os.path.exists(txt_path):
+            retry_download_args.append((txt_href, session, base_url, save_dir))
+    if retry_download_args:
+        print(f"Retrying {len(retry_download_args)} missing files...")
+        with ThreadPoolExecutor(max_workers=concurrent) as executor:
+            future_to_args = {
+                executor.submit(download_file, *args): args for args in retry_download_args
+            }
+            for future in as_completed(future_to_args):
+                href, _, _, save_dir = future_to_args[future]
+                try:
+                    local_path = future.result()
+                    print(f"Retried and saved: {local_path}")
+                except Exception as e:
+                    print(f"Failed to redownload {href}: {e}")
+
     # --- Prepare HuggingFace-style dataset folder ---
     data_dir = "data"
     os.makedirs(data_dir, exist_ok=True)
@@ -143,9 +160,13 @@ def main():
         dest_mp3 = os.path.join(data_dir, mp3_filename)
         if not os.path.exists(dest_mp3):
             shutil.copy2(mp3_path, dest_mp3)
-        # Read transcription
-        with open(txt_path, "r", encoding="utf-8") as f:
-            transcription = f.read().strip().replace('\n', ' ')
+        # Read transcription with encoding fallback
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                transcription = f.read().strip().replace('\n', ' ')
+        except UnicodeDecodeError:
+            with open(txt_path, "r", encoding="latin-1") as f:
+                transcription = f.read().strip().replace('\n', ' ')
         rows.append({
             "file_name": f"data/{mp3_filename}",
             "transcription": transcription
