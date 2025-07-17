@@ -63,7 +63,7 @@ def main():
             for link in row.find_all('a', href=True):
                 href = link['href']
                 if re.search(r'\.(txt|mp3)$', href, re.IGNORECASE):
-                    save_dir = os.path.join('preseea', country_name, utterance_name)
+                    save_dir = os.path.join('preseea', country_name)
                     local_filename = os.path.basename(urlparse(href).path)
                     local_path = os.path.join(save_dir, local_filename)
                     if os.path.exists(local_path):
