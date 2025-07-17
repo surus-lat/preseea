@@ -5,6 +5,8 @@ import re
 import os
 from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import shutil
+import csv
 
 def is_corrupted_mp3(filepath):
     if not filepath.lower().endswith('.mp3'):
@@ -47,6 +49,8 @@ def main():
     total_downloaded = 0
     concurrent = args.concurrent
 
+    audio_text_pairs = []  # List of tuples: (mp3_path, txt_path)
+
     while True:
         post_data = (
             f"patron=%3Ctext%3E%5B(word%3D'.*'%25c)%5D+%3A%3A+(match.text_pais+%3D+'{country}'%25c)^"
@@ -70,24 +74,37 @@ def main():
                 continue
             country_name = tds[-2].get_text(strip=True)
             # Find all <a> with .txt or .mp3 in href in this row
+            mp3_path, txt_path = None, None
             for link in row.find_all('a', href=True):
                 href = link['href']
-                if re.search(r'\.(txt|mp3)$', href, re.IGNORECASE):
+                if re.search(r'\.mp3$', href, re.IGNORECASE):
                     save_dir = os.path.join('preseea', country_name)
                     local_filename = os.path.basename(urlparse(href).path)
-                    local_path = os.path.join(save_dir, local_filename)
-                    file_exists = os.path.exists(local_path)
+                    mp3_path = os.path.join(save_dir, local_filename)
+                    # ...file_exists/corrupted logic as before...
+                    file_exists = os.path.exists(mp3_path)
                     corrupted = False
-                    if file_exists and local_filename.lower().endswith('.mp3'):
-                        corrupted = is_corrupted_mp3(local_path)
+                    if file_exists:
+                        corrupted = is_corrupted_mp3(mp3_path)
                     if file_exists and not corrupted:
-                        print(f"Already exists, skipping: {local_path}")
+                        print(f"Already exists, skipping: {mp3_path}")
                         continue
                     if corrupted:
-                        print(f"Corrupted file detected, will redownload: {local_path}")
+                        print(f"Corrupted file detected, will redownload: {mp3_path}")
                     else:
                         print(f"Queueing: {href} -> {save_dir}")
                     download_args.append((href, session, base_url, save_dir))
+                elif re.search(r'\.txt$', href, re.IGNORECASE):
+                    save_dir = os.path.join('preseea', country_name)
+                    local_filename = os.path.basename(urlparse(href).path)
+                    txt_path = os.path.join(save_dir, local_filename)
+                    # No need to check for corruption for txt
+                    if not os.path.exists(txt_path):
+                        print(f"Queueing: {href} -> {save_dir}")
+                        download_args.append((href, session, base_url, save_dir))
+            # If both mp3 and txt found in this row, record the pair
+            if mp3_path and txt_path:
+                audio_text_pairs.append((mp3_path, txt_path))
 
         # Concurrent download
         with ThreadPoolExecutor(max_workers=concurrent) as executor:
@@ -112,6 +129,34 @@ def main():
             break
 
     print(f"Total files downloaded: {total_downloaded}")
+
+    # --- Prepare HuggingFace-style dataset folder ---
+    data_dir = "data"
+    os.makedirs(data_dir, exist_ok=True)
+    metadata_path = "metadata.csv"
+    rows = []
+    for mp3_path, txt_path in audio_text_pairs:
+        if not (os.path.exists(mp3_path) and os.path.exists(txt_path)):
+            continue
+        # Copy mp3 to data/ (preserve filename)
+        mp3_filename = os.path.basename(mp3_path)
+        dest_mp3 = os.path.join(data_dir, mp3_filename)
+        if not os.path.exists(dest_mp3):
+            shutil.copy2(mp3_path, dest_mp3)
+        # Read transcription
+        with open(txt_path, "r", encoding="utf-8") as f:
+            transcription = f.read().strip().replace('\n', ' ')
+        rows.append({
+            "file_name": f"data/{mp3_filename}",
+            "transcription": transcription
+        })
+    # Write metadata.csv
+    with open(metadata_path, "w", encoding="utf-8", newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["file_name", "transcription"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    print(f"metadata.csv written with {len(rows)} entries.")
 
 if __name__ == "__main__":
     main()
