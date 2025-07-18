@@ -51,6 +51,7 @@ def main():
 
     audio_text_pairs = []  # List of tuples: (mp3_path, txt_path)
     all_mp3_txt_links = [] # List of tuples: (mp3_href, txt_href, save_dir)
+    country_per_pair = []  # List of country names for each pair
 
     while True:
         post_data = (
@@ -84,6 +85,7 @@ def main():
             txt_path = os.path.join(save_dir, txt_filename)
             audio_text_pairs.append((mp3_path, txt_path))
             all_mp3_txt_links.append((mp3_href, txt_href, save_dir))
+            country_per_pair.append(country_name)
             # Download logic for mp3
             file_exists = os.path.exists(mp3_path)
             corrupted = False
@@ -152,12 +154,14 @@ def main():
     os.makedirs(data_dir, exist_ok=True)
     metadata_path = "metadata.csv"
     rows = []
-    for mp3_path, txt_path in audio_text_pairs:
+    for (mp3_path, txt_path), country_name in zip(audio_text_pairs, country_per_pair):
         if not (os.path.exists(mp3_path) and os.path.exists(txt_path)):
             continue
-        # Copy mp3 to data/ (preserve filename)
+        # Copy mp3 to data/{country}/ (preserve filename)
         mp3_filename = os.path.basename(mp3_path)
-        dest_mp3 = os.path.join(data_dir, mp3_filename)
+        dest_country_dir = os.path.join(data_dir, country_name)
+        os.makedirs(dest_country_dir, exist_ok=True)
+        dest_mp3 = os.path.join(dest_country_dir, mp3_filename)
         if not os.path.exists(dest_mp3):
             shutil.copy2(mp3_path, dest_mp3)
         # Read transcription with encoding fallback
@@ -168,12 +172,15 @@ def main():
             with open(txt_path, "r", encoding="latin-1") as f:
                 transcription = f.read().strip().replace('\n', ' ')
         rows.append({
-            "file_name": f"data/{mp3_filename}",
-            "transcription": transcription
+            "file_name": f"data/{country_name}/{mp3_filename}",
+            "text": transcription,
+            "country": country_name
         })
+    # Filter out rows where the audio file does not exist
+    rows = [row for row in rows if os.path.exists(row["file_name"])]
     # Write metadata.csv
     with open(metadata_path, "w", encoding="utf-8", newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=["file_name", "transcription"])
+        writer = csv.DictWriter(csvfile, fieldnames=["file_name", "text", "country"])
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
